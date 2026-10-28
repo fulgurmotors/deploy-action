@@ -37,9 +37,8 @@ la machine cible.
 ## 3. Préparer le déploiement de l'application
 
 Le fichier `deploy.sh`, à la racine, construit et redémarre ton application.
-Pars du [modèle de deploy-hub](https://github.com/fulgurmotors/deploy-hub/blob/main/examples/deploy.sh)
-(fourni aussi par l'administrateur ou le panel). Son accès dépend de la visibilité
-du dépôt du hub. Ce script s'exécute dans la machine cible avec les droits prévus
+Pars du [modèle public](examples/deploy.sh)
+(fourni aussi par l’administrateur ou le panel). Ce script s'exécute dans la machine cible avec les droits prévus
 par le branchement ; vérifie son contenu avant de pousser.
 
 Variables : OLD_SHA, NEW_SHA, BRANCH, REPO_DIR et CHANGED_FILES. Ce dernier est le
