@@ -95,3 +95,20 @@ temporaire. Ils couvrent l'archive, la limite de taille, les permissions OIDC,
 l'échec et le succès, le suivi sans doublons, le masquage des jetons, l'absence de
 réémission, l'isolation Python et un refus avant envoi d'une archive. La recette
 d'un vrai dépôt privé suit l'installation du hub et de ses routes publiques.
+
+## Utiliser runner-hub
+
+Après installation côté deploy-hub de la vérification de preuve Git, la
+variable Actions `RUNNER_HUB=oui` du dépôt appelant sélectionne le runner
+`[self-hosted, runner-hub-deploy]`. Sans cette valeur, le job utilise
+Ubuntu 24.04 sur GitHub. Le dépôt doit être branché sur runner-hub avant
+d’activer cette variable. Le job de déploiement reste soumis aux règles de
+la branche de déploiement et d’identité GitHub.
+
+Le client envoie la preuve de commit sur les deux types de runners. Il lit
+l’objet commit, les blobs et les références de sous-modules directement
+dans Git. Les règles `export-ignore` et `export-subst` ne transforment donc
+pas la livraison. Les contenus de sous-modules restent hors de la livraison.
+L’espace `.deploy-hub-preuve/` est réservé au protocole et retiré par le hub.
+L’ordre de mise en service est le hub avec preuve, puis la version du
+workflow, puis la variable du dépôt appelant.

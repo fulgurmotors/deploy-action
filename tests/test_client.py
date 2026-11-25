@@ -40,7 +40,10 @@ class ClientTests(unittest.TestCase):
         size = self.client.archive(self.root, sha, path)
         self.assertEqual(size, path.stat().st_size)
         with tarfile.open(path) as tar:
-            self.assertEqual(tar.getnames(), ['app.js'])
+            self.assertEqual(tar.getnames(), ['.deploy-hub-preuve/commit',
+                                              '.deploy-hub-preuve/gitlinks.json', 'app.js'])
+            self.assertEqual(tar.extractfile('.deploy-hub-preuve/commit').read().decode().strip(),
+                             self.git('cat-file', 'commit', sha))
         with self.assertRaises(deploy.Failure):
             self.client.archive(self.root, 'b' * 40, self.root / 'wrong.tar.gz')
 

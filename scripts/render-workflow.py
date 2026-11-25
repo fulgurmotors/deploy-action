@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   deploy:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_HUB == 'oui' && fromJSON('["self-hosted","runner-hub-deploy"]') || 'ubuntu-24.04' }}
     timeout-minutes: 42
     steps:
       - name: Récupérer le commit
@@ -28,7 +28,7 @@ jobs:
         run: |
           python3 -I - <<'DEPLOY_HUB_CLIENT'
 '''
-workflow += ''.join('          ' + line + '\n' for line in client.splitlines())
+workflow += ''.join(('          ' + line if line else '') + '\n' for line in client.splitlines())
 workflow += '          DEPLOY_HUB_CLIENT\n'
 target = root / '.github/workflows/deploy.yml'
 if '--check' in sys.argv:
