@@ -40,9 +40,27 @@ class ClientTests(unittest.TestCase):
         size = self.client.archive(self.root, sha, path)
         self.assertEqual(size, path.stat().st_size)
         with tarfile.open(path) as tar:
-            self.assertEqual(tar.getnames(), ['app.js'])
+            self.assertEqual(tar.getnames(), ['.deploy-hub-preuve/commit',
+                                              '.deploy-hub-preuve/gitlinks.json', 'app.js'])
+            self.assertEqual(tar.extractfile('.deploy-hub-preuve/commit').read().decode().strip(),
+                             self.git('cat-file', 'commit', sha))
         with self.assertRaises(deploy.Failure):
             self.client.archive(self.root, 'b' * 40, self.root / 'wrong.tar.gz')
+
+    def test_reserved_proof_path_and_non_utf8_names_are_refused(self):
+        self.git('init', '--initial-branch=main')
+        reserved = self.root / '.deploy-hub-preuve'
+        reserved.mkdir(); (reserved / 'commit').write_text('faux')
+        self.git('add', '.'); self.git('commit', '-m', 'chemin réservé')
+        with self.assertRaisesRegex(deploy.Failure, 'chemin réservé'):
+            self.client.archive(self.root, self.git('rev-parse', 'HEAD'), self.root / 'reserved.tar.gz')
+        self.git('rm', '-rq', '.deploy-hub-preuve')
+        name = os.fsencode(self.root) + b'/caf\xe9.txt'
+        with open(name, 'wb') as stream:
+            stream.write(b'latin-1')
+        self.git('add', '-A'); self.git('commit', '-m', 'nom non UTF-8')
+        with self.assertRaisesRegex(deploy.Failure, 'non UTF-8'):
+            self.client.archive(self.root, self.git('rev-parse', 'HEAD'), self.root / 'latin.tar.gz')
 
     def test_compressed_limit_cuts_generation_before_upload(self):
         self.git('init', '--initial-branch=main'); (self.root / 'large.bin').write_bytes(os.urandom(4096))

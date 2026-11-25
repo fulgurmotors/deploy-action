@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Client embedded in the reusable workflow. No repository code is executed."""
+import gzip
+import io
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -14,6 +17,9 @@ import urllib.request
 ENDPOINT = 'https://deploy.flgr.fr'
 AUDIENCE = 'deploy.flgr.fr'
 MAX_ARCHIVE = 200 * 1024**2
+MAX_UNPACKED = 2 * 1024**3
+MAX_ENTRIES = 50000
+PROOF = '.deploy-hub-preuve'
 MAX_RESPONSE = 262144
 FINAL_STATES = {'ok', 'failed', 'superseded'}
 STATES = FINAL_STATES | {'queued', 'started'}
@@ -21,6 +27,19 @@ STATES = FINAL_STATES | {'queued', 'started'}
 
 class Failure(Exception):
     pass
+
+
+class LimitedArchive:
+    def __init__(self, output):
+        self.output = output
+
+    def write(self, data):
+        if self.output.tell() + len(data) > MAX_ARCHIVE:
+            raise Failure('Archive supérieure à 200 Mio compressés ; aucun envoi effectué.')
+        return self.output.write(data)
+
+    def tell(self):
+        return self.output.tell()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -90,28 +109,99 @@ class Client:
         result = self.request_json(urllib.request.Request(url, headers={'Authorization': 'Bearer ' + request_token}))
         return self.remember(result.get('value'))
 
+    def git(self, folder, arguments, maximum):
+        with tempfile.TemporaryFile() as output:
+            subprocess.run(['git', '--no-replace-objects', *arguments], cwd=folder,
+                           stdout=output, stderr=subprocess.DEVNULL, check=True, timeout=60)
+            output.seek(0)
+            data = output.read(maximum + 1)
+        if len(data) > maximum:
+            raise Failure('Métadonnées Git trop grandes.')
+        return data
+
+    def tree(self, folder, commit):
+        listing = self.git(folder, ['ls-tree', '-rz', '--full-tree', commit], 16 * 1024**2)
+        blobs, links = [], {}
+        if listing and not listing.endswith(b'\0'):
+            raise Failure('Arbre Git incomplet.')
+        for line in listing.split(b'\0')[:-1]:
+            header, raw_path = line.split(b'\t', 1)
+            mode, kind, oid = header.decode('ascii').split(' ')
+            try:
+                path = raw_path.decode('utf-8')
+            except UnicodeDecodeError:
+                raise Failure('Nom de fichier non UTF-8 dans le dépôt ; renommez-le avant de déployer.') from None
+            if path == PROOF or path.startswith(PROOF + '/'):
+                raise Failure('Le dépôt utilise le chemin réservé à la preuve de commit.')
+            if not re.fullmatch(r'[0-9a-f]{40}', oid):
+                raise Failure('Identifiant d’objet Git invalide.')
+            if (mode, kind) == ('160000', 'commit'):
+                links[path] = oid
+            elif kind == 'blob' and mode in ('100644', '100755', '120000'):
+                blobs.append((path, mode, oid))
+            else:
+                raise Failure('Type d’entrée de l’arbre Git non pris en charge.')
+            if len(blobs) + len(links) > MAX_ENTRIES - 2:
+                raise Failure('Trop d’entrées dans l’arbre Git.')
+        return blobs, links
+
     def archive(self, folder, commit, target):
         if not re.fullmatch(r'[0-9a-f]{40}', commit or ''):
             raise Failure('SHA Git complet manquant ou invalide.')
-        head = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=folder, capture_output=True, text=True, check=True).stdout.strip()
-        if head != commit:
+        head = self.git(folder, ['rev-parse', 'HEAD'], 128).strip()
+        if head != commit.encode('ascii'):
             raise Failure('Le checkout ne correspond pas au commit GitHub ; envoi refusé.')
-        with tempfile.TemporaryFile() as errors, Path(target).open('xb') as output:
-            process = subprocess.Popen(['git', 'archive', '--format=tar.gz', 'HEAD'], cwd=folder, stdout=subprocess.PIPE, stderr=errors)
-            count = 0
-            try:
-                while block := process.stdout.read(65536):
-                    count += len(block)
-                    if count > MAX_ARCHIVE:
-                        raise Failure('Archive supérieure à 200 Mio compressés ; aucun envoi effectué.')
-                    output.write(block)
-                if process.wait(timeout=10):
-                    raise Failure('git archive a échoué ; aucun envoi effectué.')
-            finally:
-                if process.poll() is None:
-                    process.kill(); process.wait()
-                process.stdout.close()
-        return count
+        raw_commit = self.git(folder, ['cat-file', 'commit', commit], 1024**2)
+        blobs, links = self.tree(folder, commit)
+        gitlinks = json.dumps(links, ensure_ascii=False, separators=(',', ':')).encode()
+        if len(gitlinks) > 4 * 1024**2:
+            raise Failure('Liste de sous-modules trop grande.')
+        with tempfile.TemporaryFile() as input_file, Path(target).open('xb') as output:
+            for _, _, oid in blobs:
+                input_file.write(oid.encode('ascii') + b'\n')
+            input_file.seek(0)
+            with subprocess.Popen(['git', '--no-replace-objects', 'cat-file', '--batch'],
+                                  cwd=folder, stdin=input_file, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL) as process:
+                try:
+                    with gzip.GzipFile(fileobj=LimitedArchive(output), mode='wb', compresslevel=3) as compressed:
+                        with tarfile.open(fileobj=compressed, mode='w|', format=tarfile.PAX_FORMAT) as archive:
+                            self.write_archive(archive, process.stdout, raw_commit, gitlinks, blobs)
+                    if process.wait(timeout=10):
+                        raise Failure('Lecture des objets Git interrompue.')
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+            return output.tell()
+
+    def write_archive(self, archive, objects, commit, gitlinks, blobs):
+        total = len(commit) + len(gitlinks)
+        for path, payload in ((PROOF + '/commit', commit), (PROOF + '/gitlinks.json', gitlinks)):
+            member = tarfile.TarInfo(path)
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+        for path, mode, oid in blobs:
+            header = objects.readline(128)
+            match = re.fullmatch(rb'([0-9a-f]{40}) blob ([0-9]{1,11})\n', header)
+            if not match or match[1] != oid.encode('ascii'):
+                raise Failure('Objet Git manquant ou en-tête inattendu.')
+            size = int(match[2])
+            total += size
+            if total > MAX_UNPACKED:
+                raise Failure('Arbre Git supérieur à 2 Gio.')
+            member = tarfile.TarInfo(path)
+            if mode == '120000':
+                if not 0 < size <= 4096:
+                    raise Failure('Lien symbolique vide ou trop long.')
+                member.type = tarfile.SYMTYPE
+                member.linkname = objects.read(size).decode('utf-8')
+                archive.addfile(member)
+            else:
+                member.mode = 0o755 if mode == '100755' else 0o644
+                member.size = size
+                archive.addfile(member, objects)
+            if objects.read(1) != b'\n':
+                raise Failure('Objet Git incomplet.')
 
     def upload(self, archive, token, commit, response_path):
         # curl handles Expect:100 and an early 404 while streaming a large file.
