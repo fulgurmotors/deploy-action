@@ -108,7 +108,9 @@ la branche de déploiement et d’identité GitHub.
 Le client envoie la preuve de commit sur les deux types de runners. Il lit
 l’objet commit, les blobs et les références de sous-modules directement
 dans Git. Les règles `export-ignore` et `export-subst` ne transforment donc
-pas la livraison. Les contenus de sous-modules restent hors de la livraison.
+pas la livraison. **Changement de comportement** : contrairement à
+`git archive`, les fichiers marqués `export-ignore` dans un `.gitattributes`
+sont désormais livrés. Un nom de fichier qui n’est pas en UTF-8 est refusé. Les contenus de sous-modules restent hors de la livraison.
 L’espace `.deploy-hub-preuve/` est réservé au protocole et retiré par le hub.
 L’ordre de mise en service est le hub avec preuve, puis la version du
 workflow, puis la variable du dépôt appelant.

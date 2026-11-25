@@ -127,7 +127,10 @@ class Client:
         for line in listing.split(b'\0')[:-1]:
             header, raw_path = line.split(b'\t', 1)
             mode, kind, oid = header.decode('ascii').split(' ')
-            path = raw_path.decode('utf-8')
+            try:
+                path = raw_path.decode('utf-8')
+            except UnicodeDecodeError:
+                raise Failure('Nom de fichier non UTF-8 dans le dépôt ; renommez-le avant de déployer.') from None
             if path == PROOF or path.startswith(PROOF + '/'):
                 raise Failure('Le dépôt utilise le chemin réservé à la preuve de commit.')
             if not re.fullmatch(r'[0-9a-f]{40}', oid):
